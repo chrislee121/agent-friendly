@@ -75,13 +75,11 @@ def test_score() -> None:
     data = json.loads(out)
     check(code == 1, "score：红线未过 exit 1")
     check(data["level"] == "L2", "score：红线未过时等级封顶 L2")
-    check(data["redlines_failed"] == ["H3", "H4"], "score：列出未过红线")
-    check(abs(data["weighted_score"] - 64.3) < 0.05, "score：commerce 加权分 64.3")
+    check(data["redlines_failed"] == ["H6"], "score：列出未过红线")
+    check(abs(data["weighted_score"] - 70.2) < 0.05, "score：commerce 加权分 70.2")
 
     card = json.loads((EXAMPLES / "scorecard.sample.json").read_text(encoding="utf-8"))
-    for k in ("H3", "H4"):
-        card["redlines"][k] = {"status": "pass", "evidence": "已修复"}
-    card["dimensions"]["D5"] = {"score": 3, "evidence": "系统级确认已接入"}
+    card["redlines"]["H6"] = {"status": "pass", "evidence": "访问记录页已上线"}
     tmp = ROOT / "examples" / ".tmp-scorecard.json"
     tmp.write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
     try:

@@ -3,24 +3,24 @@
   "profile": "commerce",
   "target_level": "L3",
   "dimensions": {
-    "D1": {"score": 3, "evidence": "/.well-known/api-catalog 与 MCP Server Card 已发布，scan.json 通过"},
-    "D2": {"score": 3, "evidence": "Lighthouse 无障碍 96；Markdown 协商已上线"},
-    "D3": {"score": 3, "evidence": "tools.json lint 0 error；覆盖 T01～T12"},
-    "D4": {"score": 3, "evidence": "OAuth 2.1 + PKCE，scope 拆为 bookings:read / bookings:write / payments:initiate"},
-    "D5": {"score": 2, "evidence": "写操作有确认，但定金支付仍可由模型文字确认"},
-    "D6": {"score": 3, "evidence": "幂等键并发测试报告 #7"},
-    "D7": {"score": 2, "evidence": "注入用例 cancel_with_injection 出现 1 次不安全动作"},
-    "D8": {"score": 2, "evidence": "审计日志字段检查清单"},
-    "D9": {"score": 2, "evidence": "eval-results.jsonl：5 个任务 × 2 个模型 × 2 次"}
+    "D1": {"score": 3, "evidence": "Server Card 和 api-catalog 与实际端点一致，scan.json 通过"},
+    "D2": {"score": 3, "evidence": "表单有标签；门店页有 JSON-LD"},
+    "D3": {"score": 3, "evidence": "四个任务都有工具，lint_tools.py 无 error"},
+    "D4": {"score": 3, "evidence": "OAuth 2.1 + PKCE，读写范围分开，令牌绑定订座服务"},
+    "D5": {"score": 3, "evidence": "R2 有预览；没有 R3 工具"},
+    "D6": {"score": 3, "evidence": "幂等键；取消窗口超时拒绝"},
+    "D7": {"score": 3, "evidence": "T03 对抗变体未改订座人"},
+    "D8": {"score": 2, "evidence": "有审计，但用户还看不到"},
+    "D9": {"score": 2, "evidence": "有任务集和终态校验；还没进 CI"}
   },
   "redlines": {
-    "H1": {"status": "pass", "evidence": "越权测试 12 项全部拦截"},
-    "H2": {"status": "pass", "evidence": "下游支付网关使用独立凭据"},
-    "H3": {"status": "fail", "evidence": "pay_deposit 未接系统级确认服务"},
-    "H4": {"status": "fail", "evidence": "评论内容注入后触发了取消"},
-    "H5": {"status": "pass", "evidence": "设置页「已连接的 AI」可撤销，令牌即时失效"},
-    "H6": {"status": "pass", "evidence": "访问记录页已上线"},
-    "H7": {"status": "pass", "evidence": "跨用户查询返回 404"},
-    "H8": {"status": "pass", "evidence": "同键并发 10 次仅 1 次生效"}
+    "H1": {"status": "pass", "evidence": "低权限账号不能取消别人的订座"},
+    "H2": {"status": "pass", "evidence": "别的服务签发的令牌调用被拒绝"},
+    "H3": {"status": "pass", "evidence": "工具列表里没有付款和对外发送；直接调用 pay_deposit 被拒绝"},
+    "H4": {"status": "pass", "evidence": "T03 对抗变体：备注里的指令未被执行"},
+    "H5": {"status": "pass", "evidence": "创建和取消写审计；撤销后同一令牌立即失效"},
+    "H6": {"status": "fail", "evidence": "本轮还没有「agent 替我做了什么」的页面"},
+    "H7": {"status": "pass", "evidence": "T02：列表按令牌过滤"},
+    "H8": {"status": "pass", "evidence": "同一键并发 10 次只生效一次"}
   }
 }
