@@ -72,7 +72,7 @@ Deliverables go to the target project's `agent-friendly/` folder by default. Tem
 Scripts need only the Python 3.9+ standard library:
 
 ```bash
-# External site scan (GET only; homepage and well-known paths only)
+# External site scan (GET only; one DNS-over-HTTPS lookup by default, disable with --no-dns)
 python3 scripts/scan_site.py https://example.com
 
 # Tool contract lint: MCP tools/list output, a tool array, or OpenAPI 3.x; exits 1 on errors

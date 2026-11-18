@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -130,6 +131,7 @@ def test_scan() -> None:
         "link_headers": "pass", "markdown_negotiation": "pass", "llms_txt": "pass", "html_lang": "pass",
         "json_ld": "pass", "fake_buttons": "warn", "input_labels": "warn", "img_alt": "warn", "ssr_text": "pass",
         "api_catalog": "pass", "oauth_prm": "pass", "mcp_card": "info", "a2a_card": "info",
+        "dns_aid": "skip", "auth_md": "info", "ard": "info", "poppy": "info", "x402": "info", "mpp": "info",
     }
     for cid, status in expect.items():
         got = checks.get(cid).status if cid in checks else "missing"
@@ -140,9 +142,89 @@ def test_scan() -> None:
     down = scan_site.Scanner("https://down.example", lambda u, h: scan_site.Resp(0, {}, "", "timeout")).run()
     check(len(down) == 1 and down[0].status == "fail", "scan：首页不可达时只报一条失败")
 
+    quiet = scan_site.Scanner(base, fake_site(pages), doh=None).run()
+    dns = next(c for c in quiet if c.id == "dns_aid")
+    check(dns.status == "skip" and "--no-dns" in dns.message, "scan：--no-dns 不发 DNS 查询")
+
+
+def test_scan_discovery() -> None:
+    base = "https://book.example"
+    doh = scan_site.DEFAULT_DOH
+    q = f"{doh}?{urlencode({'name': '_index._agents.book.example', 'type': 'SVCB'})}"
+    ard = json.dumps({
+        "entries": [{
+            "identifier": "urn:air:book.example:reserve",
+            "displayName": "订座",
+            "type": "application/openapi+json",
+            "url": "https://book.example/openapi.json",
+            "representativeQueries": ["今晚有位吗", "订一个四人位"],
+        }],
+    })
+    pages = {
+        base: scan_site.Resp(200, {"content-type": "text/html"}, "<html lang=\"zh\"><body>" + "有位。" * 80 + "</body></html>"),
+        q: scan_site.Resp(200, {"content-type": "application/dns-json"},
+                          json.dumps({"Status": 0, "AD": True, "Answer": [{"type": 64, "data": "1 book.example. alpn=\"h2\""}]})),
+        f"{base}/auth.md": scan_site.Resp(200, {"content-type": "text/markdown"}, "# auth.md\n\n注册后换令牌。\n"),
+        f"{base}/.well-known/oauth-protected-resource": scan_site.Resp(
+            200, {"content-type": "application/json"},
+            '{"resource": "https://book.example", "authorization_servers": ["https://book.example"]}'),
+        f"{base}/.well-known/oauth-authorization-server": scan_site.Resp(
+            200, {"content-type": "application/json"},
+            json.dumps({"issuer": "https://book.example", "token_endpoint": "https://book.example/token",
+                        "protected_resources": ["https://book.example"],
+                        "agent_auth": {"skill": "https://book.example/auth.md",
+                                       "identity_endpoint": "https://book.example/agent/identity"}})),
+        f"{base}/.well-known/ard.json": scan_site.Resp(200, {"content-type": "application/json"}, ard),
+        f"{base}/.well-known/poppy.json": scan_site.Resp(
+            200, {"content-type": "application/json"},
+            json.dumps({"protocol_version": "1.0", "organization": {"name": "南风", "domain": "book.example"}, "web": {}})),
+        f"{base}/.well-known/x402": scan_site.Resp(
+            200, {"content-type": "application/json"}, '{"x402Version": 2, "kind": "resource-server"}'),
+        f"{base}/openapi.json": scan_site.Resp(
+            200, {"content-type": "application/json"},
+            json.dumps({"openapi": "3.1.0", "paths": {"/deposit": {"post": {
+                "x-payment-info": {"offers": [{"amount": "2000", "currency": "cny", "intent": "charge", "method": "stripe"}]}}}}})),
+    }
+    checks = {c.id: c for c in scan_site.Scanner(base, fake_site(pages)).run()}
+    for cid in ("dns_aid", "auth_md", "ard", "poppy", "x402", "mpp"):
+        got = checks[cid].status
+        check(got == "pass", f"scan：{cid} 正例通过（实际 {got}：{checks[cid].message}）")
+
+    unsigned = dict(pages)
+    unsigned[q] = scan_site.Resp(200, {"content-type": "application/dns-json"},
+                                 json.dumps({"Status": 0, "AD": False, "Answer": [{"type": 64, "data": "1 book.example."}]}))
+    got = {c.id: c for c in scan_site.Scanner(base, fake_site(unsigned)).run()}["dns_aid"]
+    check(got.status == "warn", f"scan：SVCB 没有 AD 时警告（实际 {got.status}）")
+
+    legacy = dict(pages)
+    del legacy[f"{base}/.well-known/ard.json"]
+    legacy[f"{base}/.well-known/ai-catalog.json"] = pages[f"{base}/.well-known/ard.json"]
+    got = {c.id: c for c in scan_site.Scanner(base, fake_site(legacy)).run()}["ard"]
+    check(got.status == "warn" and "前代" in got.message, f"scan：只发布 ai-catalog 时提醒迁到 ard.json（实际 {got.status}）")
+
+    leaked = []
+
+    def watching(url: str, headers: dict) -> scan_site.Resp:
+        leaked.append(url)
+        if url == "https://evil.example/ard.json":
+            return scan_site.Resp(200, {"content-type": "application/json"}, pages[f"{base}/.well-known/ard.json"].body)
+        return fake_site({base: pages[base]})(url, headers)
+
+    home = scan_site.Resp(200, {"content-type": "text/html", "link": '<https://evil.example/ard.json>; rel="ard"'},
+                          pages[base].body)
+    scan_site.Scanner(base, watching, doh=None).run()
+    check("https://evil.example/ard.json" not in leaked, "scan：不跟随跨域 rel=ard")
+
+    bad_pay = dict(pages)
+    bad_pay[f"{base}/.well-known/x402"] = scan_site.Resp(
+        200, {"content-type": "application/json"},
+        '{"x402Version": 2, "kind": "facilitator", "facilitator": {"baseUrl": "https://evil.example", "endpoints": {}, "kinds": []}}')
+    got = {c.id: c for c in scan_site.Scanner(base, fake_site(bad_pay)).run()}["x402"]
+    check(got.status == "warn", f"scan：x402 facilitator 指向外域时警告（实际 {got.status}）")
+
 
 def main() -> int:
-    for t in (test_lint, test_passk, test_score, test_scan):
+    for t in (test_lint, test_passk, test_score, test_scan, test_scan_discovery):
         print(f"\n== {t.__name__}")
         t()
     print(f"\n{'PASS' if not failures else 'FAIL'}（失败 {len(failures)} 项）")

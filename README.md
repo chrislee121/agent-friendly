@@ -65,12 +65,12 @@ npx skills add chrislee121/agent-friendly
 按 agent-friendly 验收这套 MCP 工具，目标 L3
 ```
 
-交付物默认写到被改造项目的 `agent-friendly/` 目录，模板在 [templates/](templates/)。
+交付物默认写到被改造项目的 `agent-friendly/` 目录，模板在 [templates/](templates/)。连锁餐厅订座的闭环示例见 [examples/walkthrough.md](examples/walkthrough.md)。
 
 脚本只用 Python 3.9+ 标准库：
 
 ```bash
-# 网站外部扫描（只发 GET，只读首页和 well-known 路径）
+# 网站外部扫描（只发 GET；默认多一条 DNS-over-HTTPS，--no-dns 可关）
 python3 scripts/scan_site.py https://example.com
 
 # 工具契约检查：MCP tools/list 结果、工具数组或 OpenAPI 3.x，有 error 时 exit 1

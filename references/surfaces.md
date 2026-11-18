@@ -59,6 +59,7 @@
 - 传输用 Streamable HTTP，遵守当前协议版本（2026-07-28：无状态，每个请求在 `_meta` 里带协议版本，必须实现 `server/discover`）
 - 跨调用状态用服务端签发的句柄作为普通参数传递，不要依赖会话
 - 授权：OAuth 2.1 + PKCE；发布 `/.well-known/oauth-protected-resource`；客户端注册优先支持 Client ID Metadata Documents，动态注册只作兼容；回调地址按注册值精确比对
+- 允许 agent 自助注册时再发布 `/auth.md`，并在**本域**授权服务器元数据里放 `agent_auth`（`skill`、`identity_endpoint` 等）。不要假设扫描器会跟随到另一个授权域名
 - 校验 `Origin` 头，不合法时返回 403
 - 发现：Server Card（端点下的 `/server-card`）、域名级 AI Catalog、MCP Registry 登记
 - 长任务用官方 tasks 扩展；需要用户补充输入时用多轮往返返回 `input_required`
@@ -111,9 +112,22 @@
 - 敏感信息放在需认证的扩展卡片里，公开卡片不放密钥
 - 卡片可以用 JWS 签名（RFC 8785 规范化）
 
+### 个人 agent（Personal Agent Protocol v1.0）
+
+- 发布 `/.well-known/poppy.json`：`protocol_version`、`organization.name`、`organization.domain`（必须等于提供该文件的主机），以及 `agent`、`apis`、`web` 至少一个
+- 只开放网站、不提供登录时，`web` 可以是空对象
+- 有登录时，授权服务器元数据的 `protected_resources` 要包含 `https://<organization.domain>`
+
+### 多资源发现（ARD，草案）
+
+- 清单放 `/.well-known/ard.json`。每条要有 `urn:air:<域名>:<名称>`、`displayName`、媒体类型，并且 `url` 与 `data` 只能有一个
+- 首页可加 `Link: </.well-known/ard.json>; rel="ard"`。`/.well-known/ai-catalog.json` 是前代路径，新发布不要只用它
+
 ### 交易协议
 
 - 先确认商户角色（是否为记账商户）、拒付责任归谁、平台覆盖哪些地区
 - 支付金额和收款方由服务端定，模型和对方 agent 传来的值都不可信
+- x402：真正的报价在资源的 HTTP 402 和 `PAYMENT-REQUIRED`。可选的发现清单放 `/.well-known/x402`；`kind` 含 facilitator 时，`baseUrl` 必须在本域或子域
+- MPP：在 `/openapi.json` 的付费操作上写 `x-payment-info`（新文档用 `offers`，`intent` 为 `charge` 或 `session`）。这只是报价提示，以运行时 402 质询为准
 - 限额在付款组件里强制执行（不在模型上下文里），未结算的按上限预占，扣减要原子化
 - 签名授权书（AP2）连同展示给用户的说明一起保存

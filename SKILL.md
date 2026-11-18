@@ -58,7 +58,7 @@ python3 $SKILL_ROOT/scripts/scan_site.py https://example.com --json > agent-frie
 python3 $SKILL_ROOT/scripts/lint_tools.py path/to/tools.json   # MCP tools/list 结果或 OpenAPI 3.x
 ```
 
-扫描只发 GET 请求，只读取首页和约定的 well-known 路径，不爬站内其他页面。用户没给网址时不要擅自扫。扫描只覆盖「可发现、可读取」两项，评不了能不能办成事，不能拿它代替 P7 评测。
+扫描只发 GET。它读取首页和约定的发现路径，不爬站内其他页面，不跟随跨域链接。默认还会向 `cloudflare-dns.com` 查一条 DNS-AID（`_index._agents` 的 SVCB）；这条查询会把域名告诉该解析器，不需要时加 `--no-dns`。用户没给网址时不要擅自扫。扫描只覆盖「可发现、可读取」的一部分，评不了能不能办成事，不能拿它代替 P7 评测。
 
 ## P2 任务建模
 
@@ -198,7 +198,7 @@ python3 $SKILL_ROOT/scripts/score.py agent-friendly/scorecard.json --gate L3
 
 | 文件 | 用途 |
 |---|---|
-| [scripts/scan_site.py](scripts/scan_site.py) | 网站外部扫描：robots、内容偏好、Markdown 协商、llms.txt、well-known 发现文件、OAuth 元数据、页面语义 |
+| [scripts/scan_site.py](scripts/scan_site.py) | 网站外部扫描：robots、内容偏好、Markdown 协商、llms.txt、发现文件（含 ARD、Poppy、auth.md、x402、MPP）、DNS-AID、OAuth 元数据、页面语义 |
 | [scripts/lint_tools.py](scripts/lint_tools.py) | 工具契约检查：MCP `tools/list` 或 OpenAPI 3.x，失败 exit 1 |
 | [scripts/passk.py](scripts/passk.py) | 评测结果计算 pass^k、pass@k、不安全动作率，可设门槛 |
 | [scripts/score.py](scripts/score.py) | 评分卡计算等级、红线、加权分，可设门槛 |

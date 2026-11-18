@@ -13,11 +13,13 @@
 | Link 响应头（RFC 8288） | 在首页响应头里指向 API 描述、文档 | IETF | 正式 | 有 API 或文档的网站 | https://www.rfc-editor.org/rfc/rfc8288 |
 | API Catalog（RFC 9727） | `/.well-known/api-catalog`，列出你的 API 和描述文件 | IETF | 正式 | 有公开 API | https://www.rfc-editor.org/rfc/rfc9727 |
 | MCP Server Card（SEP-2127） | 连接前描述远程 MCP 服务：名称、端点、协议版本 | MCP / AAIF | 正式（扩展） | 提供远程 MCP | https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2127-mcp-server-cards.md |
-| AI Catalog | `/.well-known/ai-catalog.json`，一个域名下的 MCP 卡片、Agent 卡片索引 | ARD / Agent-Card 社区 | 草案 | 一个域名下有多个 agent 服务 | https://github.com/Agent-Card/ai-catalog |
+| AI Catalog | `/.well-known/ai-catalog.json`，ARD 的前代清单。新发布改用下面的 ARD | Agent-Card 社区 | 草案 | 只为兼容已发布的旧清单 | https://github.com/Agent-Card/ai-catalog |
+| ARD | `/.well-known/ard.json`，或首页 `Link` 的 `rel="ard"`（只认本域）。条目要有 `urn:air:<域名>:<名称>`、`displayName`、媒体类型，且 `url` 与 `data` 二选一 | agenticresourcediscovery.org | 草案（v0.91） | 一个域名下有多个 agent 资源 | https://github.com/ards-project/ard-spec |
+| Personal Agent Protocol | `/.well-known/poppy.json`。`organization.domain` 必须是提供该文件的主机；`agent`、`apis`、`web` 至少有一个 | personalagentprotocol.org | 现行（v1.0，2026-11-14） | 让个人 agent 代表用户用网站、API 或企业 agent | https://personalagentprotocol.org/docs/1.0/spec |
 | MCP Registry `server.json` | 登记到官方 MCP 目录，可放 `/.well-known/mcp/server.json` 供自动发现 | MCP | 现行 | 希望被 MCP 客户端检索到 | https://modelcontextprotocol.io/registry/quickstart |
 | A2A Agent Card | `/.well-known/agent-card.json`，描述一个 agent 的技能、端点、认证 | Linux Foundation（A2A 项目） | 正式（v1.0） | 你提供的是 agent 而不只是工具 | https://a2a-protocol.org/latest/specification/ |
 | Agent Skills 发现索引 | `/.well-known/agent-skills/index.json`，告诉 agent 有哪些技能文档 | Cloudflare 提案 | 草案 | 有面向 agent 的操作指南 | https://github.com/cloudflare/agent-skills-discovery-rfc |
-| DNS-AID | `_agents` 命名空间下的 SVCB 记录 | IETF 个人草案 | 草案 | 了解即可 | https://datatracker.ietf.org/doc/draft-mozleywilliams-dnsop-dnsaid/ |
+| DNS-AID | `_index._agents.<域名>` 上的 ServiceMode SVCB（type 64）。扫描用 DNS-over-HTTPS 查这一条，HTTPS 记录（type 65）不算；无 AD 只警告 | IETF 个人草案（draft-02） | 草案 | 你确实有组织级 agent 索引时 | https://datatracker.ietf.org/doc/draft-mozleywilliams-dnsop-dnsaid/ |
 
 ## 2. 内容层：agent 怎么读懂你
 
@@ -64,6 +66,7 @@
 | Client ID Metadata Documents | 客户端用一个 HTTPS URL 当 client_id，代替动态注册。MCP 2026-07-28 推荐，动态客户端注册（RFC 7591）已标为弃用 | 草案 | https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/ |
 | RFC 9207 `iss` 参数 | 防混淆授权服务器攻击 | 正式 | https://www.rfc-editor.org/rfc/rfc9207 |
 | RFC 8693 令牌交换 | 委托链：agent 代表用户再调下游时换发新令牌，不透传 | 正式 | https://www.rfc-editor.org/rfc/rfc8693 |
+| auth.md | `/auth.md`（一级标题含 auth.md），加上本域受保护资源元数据，以及本域授权服务器元数据里的 `agent_auth`。扫描不跟随跨域授权服务器 | 现行（WorkOS 提案） | https://github.com/workos/auth.md |
 
 ## 6. 交易层：agent 怎么付钱
 
@@ -72,8 +75,8 @@
 | ACP（Agentic Commerce Protocol） | agent 怎么把一次购买交给商家结账；一次性限额支付令牌 | OpenAI + Stripe | Beta |
 | UCP（Universal Commerce Protocol） | agent 怎么使用商家完整的商业系统：目录、购物车、结账、身份关联、订单 | Google + Shopify 等 | 现行，Google AI Mode / Gemini 部分地区已用 |
 | AP2（Agent Payments Protocol） | 用签名授权书证明用户授权了什么；不负责付款本身 | Google，已贡献给 FIDO 联盟 | v0.2 |
-| x402 | 软件对软件按次付费，基于 HTTP 402 | x402 基金会（Linux Foundation） | 现行 |
-| MPP | 402 质询、凭证、收据，支持卡和稳定币 | Stripe + Tempo | 现行 |
+| x402 | 软件对软件按次付费：资源返回 HTTP 402 和 `PAYMENT-REQUIRED`。发现清单是另一份草案，放 `/.well-known/x402`（`x402Version`、`kind`；facilitator 的 `baseUrl` 必须在本域）。扫描只读清单，不请求付费资源 | x402 基金会（Linux Foundation） | 协议现行；发现为草案 |
+| MPP | 402 质询、凭证、收据，支持卡和稳定币。发现用 `/openapi.json` 里的 `x-payment-info`（`intent` 为 `charge` 或 `session`）。发现文档只是提示，运行时以 402 质询为准 | Stripe + Tempo | 现行；发现文档为草案 |
 | Visa Trusted Agent Protocol / Intelligent Commerce、Mastercard Agent Pay | 卡组织侧识别可信 agent、令牌化凭证 | Visa、Mastercard | 试点 |
 
 对比参考：https://agent-ready.dev/acp-vs-ucp-vs-ap2-vs-x402
@@ -106,5 +109,5 @@
 
 - **必做**（成熟、成本低）：语义 HTML 与无障碍、robots.txt 表态、结构化数据、OpenAPI（如有 API）、OAuth 元数据
 - **优先**（已成主流）：远程 MCP、App Intents / AppFunctions / 鸿蒙意图（有 App 时）、Arazzo（多步流程）
-- **按需**：A2A（你提供 agent）、交易协议（你卖东西）、WebMCP（复杂网页应用，且接受草案）
-- **跟踪**：AIPREF、Web Bot Auth、Server Card / AI Catalog、DNS-AID、CIMD
+- **按需**：A2A（你提供 agent）、交易协议（你卖东西）、WebMCP（复杂网页应用，且接受草案）、auth.md（agent 自助注册）、ARD（一个域名多个资源）、Personal Agent Protocol（个人 agent 代用户办事）
+- **跟踪**：AIPREF、Web Bot Auth、AI Catalog、DNS-AID、x402 的 well-known 发现草案、CIMD
