@@ -67,12 +67,13 @@ Use agent-friendly to assess the agent readiness of https://example.com
 Use agent-friendly to run acceptance on these MCP tools, target L3
 ```
 
-Deliverables go to the target project's `agent-friendly/` folder by default. Templates live in [templates/](templates/).
+Deliverables go to the target project's `agent-friendly/` folder by default. Templates live in [templates/](templates/). A full-loop walkthrough for a restaurant booking system is in [examples/walkthrough.md](examples/walkthrough.md) (Chinese only).
 
 Scripts need only the Python 3.9+ standard library:
 
 ```bash
-# External site scan (GET only; one DNS-over-HTTPS lookup by default, disable with --no-dns)
+# External site scan (GET only; redirects followed only within the same host;
+# one DNS-over-HTTPS lookup by default, change it with --doh or disable it with --no-dns)
 python3 scripts/scan_site.py https://example.com
 
 # Tool contract lint: MCP tools/list output, a tool array, or OpenAPI 3.x; exits 1 on errors

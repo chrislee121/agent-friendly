@@ -12,14 +12,14 @@
 | sitemap.xml | 列出规范 URL | sitemaps.org | 现行 | 内容型网站 | https://www.sitemaps.org/protocol.html |
 | Link 响应头（RFC 8288） | 在首页响应头里指向 API 描述、文档 | IETF | 正式 | 有 API 或文档的网站 | https://www.rfc-editor.org/rfc/rfc8288 |
 | API Catalog（RFC 9727） | `/.well-known/api-catalog`，列出你的 API 和描述文件 | IETF | 正式 | 有公开 API | https://www.rfc-editor.org/rfc/rfc9727 |
-| MCP Server Card（SEP-2127） | 连接前描述远程 MCP 服务：名称、端点、协议版本 | MCP / AAIF | 正式（扩展） | 提供远程 MCP | https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2127-mcp-server-cards.md |
-| AI Catalog | `/.well-known/ai-catalog.json`，ARD 的前代清单。新发布改用下面的 ARD | Agent-Card 社区 | 草案 | 只为兼容已发布的旧清单 | https://github.com/Agent-Card/ai-catalog |
-| ARD | `/.well-known/ard.json`，或首页 `Link` 的 `rel="ard"`（只认本域）。条目要有 `urn:air:<域名>:<名称>`、`displayName`、媒体类型，且 `url` 与 `data` 二选一 | agenticresourcediscovery.org | 草案（v0.91） | 一个域名下有多个 agent 资源 | https://github.com/ards-project/ard-spec |
+| MCP Server Card（SEP-2127） | 连接前描述远程 MCP 服务：名称、端点、协议版本。现行扩展推荐放在 MCP 端点 URL 后加 `/server-card`，再登记到 AI Catalog；早期的 `/.well-known/mcp-server-card` 等固定位置只算兼容 | MCP / AAIF | 正式（扩展） | 提供远程 MCP | https://github.com/modelcontextprotocol/ext-server-card |
+| AI Catalog | `/.well-known/ai-catalog.json`，列出一个域名下的 MCP Server Card、Agent Card 等，条目要有 `identifier`、媒体类型，`url` 与 `data` 二选一。MCP Server Card 扩展按这个路径发现 | Agent-Card 社区 | 草案 | 一个域名下有多个 agent 资源，或要让 MCP 客户端发现 Server Card | https://github.com/Agent-Card/ai-catalog |
+| ARD | `/.well-known/ard.json` 或首页 `rel="ard"`，条目格式与 AI Catalog 相同，另要求 `urn:air:<域名>:<名称>`、`displayName`，建议 2～5 条 `representativeQueries`。ARD 规范把 ai-catalog.json 称为前代路径，而 MCP 扩展仍读它，所以两个都可以发布 | agenticresourcediscovery.org | 草案（v0.91） | 想被 ARD 注册中心语义检索 | https://github.com/ards-project/ard-spec |
 | Personal Agent Protocol | `/.well-known/poppy.json`。`organization.domain` 必须是提供该文件的主机；`agent`、`apis`、`web` 至少有一个 | personalagentprotocol.org | 现行（v1.0，2026-11-14） | 让个人 agent 代表用户用网站、API 或企业 agent | https://personalagentprotocol.org/docs/1.0/spec |
 | MCP Registry `server.json` | 登记到官方 MCP 目录，可放 `/.well-known/mcp/server.json` 供自动发现 | MCP | 现行 | 希望被 MCP 客户端检索到 | https://modelcontextprotocol.io/registry/quickstart |
 | A2A Agent Card | `/.well-known/agent-card.json`，描述一个 agent 的技能、端点、认证 | Linux Foundation（A2A 项目） | 正式（v1.0） | 你提供的是 agent 而不只是工具 | https://a2a-protocol.org/latest/specification/ |
 | Agent Skills 发现索引 | `/.well-known/agent-skills/index.json`，告诉 agent 有哪些技能文档 | Cloudflare 提案 | 草案 | 有面向 agent 的操作指南 | https://github.com/cloudflare/agent-skills-discovery-rfc |
-| DNS-AID | `_index._agents.<域名>` 上的 ServiceMode SVCB（type 64）。扫描用 DNS-over-HTTPS 查这一条，HTTPS 记录（type 65）不算；无 AD 只警告 | IETF 个人草案（draft-02） | 草案 | 你确实有组织级 agent 索引时 | https://datatracker.ietf.org/doc/draft-mozleywilliams-dnsop-dnsaid/ |
+| DNS-AID | `_index._agents.<域名>` 上的 ServiceMode SVCB（type 64）。扫描用 DNS-over-HTTPS 查这一条，HTTPS 记录（type 65）不算；无 AD 只警告，而 AD 取决于解析器是否做 DNSSEC 验证（AliDNS 不做） | IETF 个人草案（draft-02） | 草案 | 你确实有组织级 agent 索引时 | https://datatracker.ietf.org/doc/draft-mozleywilliams-dnsop-dnsaid/ |
 
 ## 2. 内容层：agent 怎么读懂你
 
@@ -109,5 +109,5 @@
 
 - **必做**（成熟、成本低）：语义 HTML 与无障碍、robots.txt 表态、结构化数据、OpenAPI（如有 API）、OAuth 元数据
 - **优先**（已成主流）：远程 MCP、App Intents / AppFunctions / 鸿蒙意图（有 App 时）、Arazzo（多步流程）
-- **按需**：A2A（你提供 agent）、交易协议（你卖东西）、WebMCP（复杂网页应用，且接受草案）、auth.md（agent 自助注册）、ARD（一个域名多个资源）、Personal Agent Protocol（个人 agent 代用户办事）
-- **跟踪**：AIPREF、Web Bot Auth、AI Catalog、DNS-AID、x402 的 well-known 发现草案、CIMD
+- **按需**：A2A（你提供 agent）、交易协议（你卖东西）、WebMCP（复杂网页应用，且接受草案）、auth.md（agent 自助注册）、AI Catalog / ARD（一个域名多个资源）、Personal Agent Protocol（个人 agent 代用户办事）
+- **跟踪**：AIPREF、Web Bot Auth、ARD、DNS-AID、x402 的 well-known 发现草案、CIMD

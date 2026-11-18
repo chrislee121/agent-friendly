@@ -118,10 +118,11 @@
 - 只开放网站、不提供登录时，`web` 可以是空对象
 - 有登录时，授权服务器元数据的 `protected_resources` 要包含 `https://<organization.domain>`
 
-### 多资源发现（ARD，草案）
+### 多资源发现（AI Catalog / ARD，草案）
 
-- 清单放 `/.well-known/ard.json`。每条要有 `urn:air:<域名>:<名称>`、`displayName`、媒体类型，并且 `url` 与 `data` 只能有一个
-- 首页可加 `Link: </.well-known/ard.json>; rel="ard"`。`/.well-known/ai-catalog.json` 是前代路径，新发布不要只用它
+- 先发 `/.well-known/ai-catalog.json`：MCP Server Card 扩展按这个路径发现。每条要有 `identifier`、媒体类型 `type`，`url` 与 `data` 只能有一个；MCP 卡片的类型是 `application/mcp-server-card+json`
+- 想进 ARD 注册中心，再发 `/.well-known/ard.json`（条目可相同），并补 `urn:air:<域名>:<名称>`、`displayName`、2～5 条 `representativeQueries`；首页可加 `Link: </.well-known/ard.json>; rel="ard"`
+- 两个规范对 ai-catalog.json 的定位不一致（ARD 称为前代路径，MCP 扩展仍在用），所以不要只押一个
 
 ### 交易协议
 

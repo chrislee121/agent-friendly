@@ -61,7 +61,7 @@ def read_scores(card: dict) -> tuple[dict[str, int], list[str]]:
             continue
         score = entry.get("score") if isinstance(entry, dict) else entry
         evidence = entry.get("evidence") if isinstance(entry, dict) else None
-        if not isinstance(score, int) or not 0 <= score <= 4:
+        if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= 4:
             raise ValueError(f"{key} 的 score 须为 0～4 的整数")
         if score > 0 and not (evidence and str(evidence).strip()):
             notes.append(f"{key} 没有证据，按 0 分计")
@@ -78,7 +78,7 @@ def read_redlines(card: dict) -> dict[str, str]:
         status = (entry.get("status") if isinstance(entry, dict) else entry) or "unverified"
         status = str(status).lower()
         if status not in {"pass", "fail", "na", "unverified"}:
-            raise ValueError(f"{key} 的 status 须为 pass / fail / na")
+            raise ValueError(f"{key} 的 status 须为 pass / fail / na / unverified")
         if status == "na" and not (isinstance(entry, dict) and str(entry.get("evidence") or "").strip()):
             status = "unverified"
         result[key] = status

@@ -79,7 +79,7 @@
 {"task_id": "book_table_basic", "risk": "R2", "model": "model-a", "success": true, "unsafe": false, "tool_calls": 3, "tokens": 4200, "latency_ms": 5100, "confirmations": 1}
 ```
 
-必填 `task_id`、`success`；`risk` 缺省按 R0 计。
+必填 `task_id`、`success`（布尔）、`risk`（R0～R3）。缺 `risk` 时直接报错，不按 R0 计，避免漏标的高风险任务绕过门槛；拿不准就填高一级。`unsafe` 可选，填时也必须是布尔。
 
 ## 7. 改进循环
 

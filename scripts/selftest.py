@@ -131,7 +131,7 @@ def test_scan() -> None:
         "link_headers": "pass", "markdown_negotiation": "pass", "llms_txt": "pass", "html_lang": "pass",
         "json_ld": "pass", "fake_buttons": "warn", "input_labels": "warn", "img_alt": "warn", "ssr_text": "pass",
         "api_catalog": "pass", "oauth_prm": "pass", "mcp_card": "info", "a2a_card": "info",
-        "dns_aid": "skip", "auth_md": "info", "ard": "info", "poppy": "info", "x402": "info", "mpp": "info",
+        "dns_aid": "skip", "auth_md": "info", "ai_catalog": "info", "poppy": "info", "x402": "info", "mpp": "info",
     }
     for cid, status in expect.items():
         got = checks.get(cid).status if cid in checks else "missing"
@@ -183,12 +183,22 @@ def test_scan_discovery() -> None:
         f"{base}/openapi.json": scan_site.Resp(
             200, {"content-type": "application/json"},
             json.dumps({"openapi": "3.1.0", "paths": {"/deposit": {"post": {
-                "x-payment-info": {"offers": [{"amount": "2000", "currency": "cny", "intent": "charge", "method": "stripe"}]}}}}})),
+                "x-payment-info": {"offers": [{"amount": "2000", "currency": "cny", "intent": "charge", "method": "stripe"}]},
+                "responses": {"200": {"description": "ok"}, "402": {"description": "Payment Required"}}}}}})),
     }
     checks = {c.id: c for c in scan_site.Scanner(base, fake_site(pages)).run()}
-    for cid in ("dns_aid", "auth_md", "ard", "poppy", "x402", "mpp"):
+    for cid in ("dns_aid", "auth_md", "ai_catalog", "poppy", "x402", "mpp"):
         got = checks[cid].status
         check(got == "pass", f"scan：{cid} 正例通过（实际 {got}：{checks[cid].message}）")
+
+    no402 = dict(pages)
+    no402[f"{base}/openapi.json"] = scan_site.Resp(
+        200, {"content-type": "application/json"},
+        json.dumps({"openapi": "3.1.0", "paths": {"/deposit": {"post": {
+            "x-payment-info": {"offers": [{"amount": "2000", "intent": "charge", "method": "stripe"}]},
+            "responses": {"200": {"description": "ok"}}}}}}))
+    got = {c.id: c for c in scan_site.Scanner(base, fake_site(no402), doh=None).run()}["mpp"]
+    check(got.status == "warn" and "402" in got.message, f"scan：付费操作缺 402 响应时警告（实际 {got.status}）")
 
     unsigned = dict(pages)
     unsigned[q] = scan_site.Resp(200, {"content-type": "application/dns-json"},
@@ -196,24 +206,35 @@ def test_scan_discovery() -> None:
     got = {c.id: c for c in scan_site.Scanner(base, fake_site(unsigned)).run()}["dns_aid"]
     check(got.status == "warn", f"scan：SVCB 没有 AD 时警告（实际 {got.status}）")
 
-    legacy = dict(pages)
-    del legacy[f"{base}/.well-known/ard.json"]
-    legacy[f"{base}/.well-known/ai-catalog.json"] = pages[f"{base}/.well-known/ard.json"]
-    got = {c.id: c for c in scan_site.Scanner(base, fake_site(legacy)).run()}["ard"]
-    check(got.status == "warn" and "前代" in got.message, f"scan：只发布 ai-catalog 时提醒迁到 ard.json（实际 {got.status}）")
+    mcp = dict(pages)
+    del mcp[f"{base}/.well-known/ard.json"]
+    mcp[f"{base}/.well-known/ai-catalog.json"] = scan_site.Resp(200, {"content-type": "application/json"}, json.dumps({
+        "specVersion": "1.0",
+        "entries": [{"identifier": "urn:air:book.example:mcp:reserve", "displayName": "订座 MCP",
+                     "type": "application/mcp-server-card+json", "url": "https://book.example/mcp/server-card"}]}))
+    mcp[f"{base}/mcp/server-card"] = scan_site.Resp(200, {"content-type": "application/mcp-server-card+json"},
+                                                    '{"name": "example.book/reserve", "version": "1.0.0"}')
+    got = {c.id: c for c in scan_site.Scanner(base, fake_site(mcp), doh=None).run()}
+    check(got["ai_catalog"].status == "pass", f"scan：只发布 ai-catalog.json 也算通过（实际 {got['ai_catalog'].status}）")
+    check(got["mcp_card"].status == "pass" and "/mcp/server-card" in got["mcp_card"].message,
+          f"scan：经 AI Catalog 找到端点下的 /server-card（实际 {got['mcp_card'].status}：{got['mcp_card'].message}）")
 
     leaked = []
+    evil_home = scan_site.Resp(200, {"content-type": "text/html",
+                                     "link": '<https://evil.example/ard.json>; rel="ard", <https://evil.example/c.json>; rel="ai-catalog"'},
+                               pages[base].body + '<link rel="ard" href="https://evil.example/page.json">')
+    evil_pages = {base: evil_home}
 
     def watching(url: str, headers: dict) -> scan_site.Resp:
         leaked.append(url)
-        if url == "https://evil.example/ard.json":
+        if url.startswith("https://evil.example/"):
             return scan_site.Resp(200, {"content-type": "application/json"}, pages[f"{base}/.well-known/ard.json"].body)
-        return fake_site({base: pages[base]})(url, headers)
+        return fake_site(evil_pages)(url, headers)
 
-    home = scan_site.Resp(200, {"content-type": "text/html", "link": '<https://evil.example/ard.json>; rel="ard"'},
-                          pages[base].body)
-    scan_site.Scanner(base, watching, doh=None).run()
-    check("https://evil.example/ard.json" not in leaked, "scan：不跟随跨域 rel=ard")
+    got = {c.id: c for c in scan_site.Scanner(base, watching, doh=None).run()}["ai_catalog"]
+    check(not any(u.startswith("https://evil.example/") for u in leaked),
+          f"scan：不跟随跨域 rel=ard / rel=ai-catalog / <link>（实际请求了 {[u for u in leaked if 'evil' in u]}）")
+    check("未跟随外域链接 3 个" in got.message, f"scan：报告未跟随的外域目录链接（实际 {got.message}）")
 
     bad_pay = dict(pages)
     bad_pay[f"{base}/.well-known/x402"] = scan_site.Resp(
@@ -223,8 +244,104 @@ def test_scan_discovery() -> None:
     check(got.status == "warn", f"scan：x402 facilitator 指向外域时警告（实际 {got.status}）")
 
 
+def redirect(location: str) -> scan_site.Resp:
+    return scan_site.Resp(302, {"location": location, "content-type": "text/html"}, "")
+
+
+def test_scan_redirects() -> None:
+    base = "https://shop.example"
+    html = scan_site.Resp(200, {"content-type": "text/html"}, '<html lang="zh"><body>' + "好。" * 120 + "</body></html>")
+    poppy = json.dumps({"protocol_version": "1.0", "organization": {"name": "x", "domain": "shop.example"}, "web": {}})
+    requested = []
+
+    def fetch(pages):
+        def inner(url: str, headers: dict) -> scan_site.Resp:
+            requested.append(url)
+            return pages.get(url) or scan_site.Resp(404, {"content-type": "text/html"}, "")
+        return inner
+
+    pages = {
+        base: html,
+        f"{base}/.well-known/poppy.json": redirect("https://other.example/poppy.json"),
+        "https://other.example/poppy.json": scan_site.Resp(200, {"content-type": "application/json"}, poppy),
+        f"{base}/.well-known/x402": redirect("http://169.254.169.254/latest"),
+        f"{base}/robots.txt": redirect("/robots-real.txt"),
+        f"{base}/robots-real.txt": scan_site.Resp(200, {"content-type": "text/plain"}, "User-agent: *\nAllow: /\n"),
+    }
+    checks = {c.id: c for c in scan_site.Scanner(base, fetch(pages), doh=None).run()}
+    check(not any("other.example" in u or "169.254" in u for u in requested), "scan：不跟随跨主机和内网跳转")
+    check(checks["poppy"].status == "info", f"scan：跨主机跳转的 poppy.json 不算发布（实际 {checks['poppy'].status}）")
+    check(checks["robots"].status == "pass", f"scan：同主机跳转照常跟随（实际 {checks['robots'].status}）")
+
+    requested.clear()
+    moved = {
+        "https://shop.example": redirect("https://www.shop.example/"),
+        "https://www.shop.example/": html,
+        "https://www.shop.example/robots.txt": scan_site.Resp(200, {"content-type": "text/plain"}, "User-agent: *\n"),
+    }
+    checks = {c.id: c for c in scan_site.Scanner("https://shop.example", fetch(moved), doh=None).run()}
+    check(checks["home"].status == "pass" and "www.shop.example" in checks["home"].message,
+          f"scan：首页跳到规范主机后按新主机检查（实际 {checks['home'].message}）")
+    check(checks["robots"].status == "pass", "scan：首页换主机后，其余路径跟着换")
+
+    requested.clear()
+    scan_site.Scanner("https://shop.example", fetch(moved)).run()
+    dns = [u for u in requested if "_agents" in u]
+    check(len(dns) == 1 and "_index._agents.shop.example" in dns[0] and "www" not in dns[0],
+          f"scan：DNS-AID 查用户给的域名，不查跳转后的 www（实际 {dns}）")
+
+    inner = {"https://shop.example": redirect("http://127.0.0.1:8080/")}
+    checks = scan_site.Scanner("https://shop.example", fetch(inner), doh=None).run()
+    check(checks[0].status == "fail" and "内网" in checks[0].message, f"scan：首页跳到内网地址时不跟随（实际 {checks[0].message}）")
+
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.end_headers()
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        resp = scan_site.http_fetch(f"http://127.0.0.1:{server.server_port}/start", {}, 5)
+    finally:
+        server.shutdown()
+    check(resp.status == 302 and hits == ["/start"], f"scan：http_fetch 不自动跟随跳转（实际 {resp.status}，{hits}）")
+
+
+def test_passk_input() -> None:
+    tmp = ROOT / "examples" / ".tmp-eval.jsonl"
+    cases = [
+        ('{"task_id": "pay", "success": true}', 2, "缺 risk 报错，不默认 R0"),
+        ('{"task_id": "pay", "success": "false", "risk": "R3"}', 2, "success 为字符串时报错"),
+        ('{"task_id": "pay", "success": true, "risk": "R9"}', 2, "未知风险等级报错"),
+        ('{"task_id": "pay", "success": true, "risk": "r2"}', 0, "小写 r2 按 R2 处理"),
+    ]
+    try:
+        for line, want, label in cases:
+            tmp.write_text(line + "\n", encoding="utf-8")
+            code, _ = run("scripts/passk.py", str(tmp))
+            check(code == want, f"passk：{label}（exit {code}）")
+        tmp.write_text('{"task_id": "pay", "success": true, "risk": "R2"}\n', encoding="utf-8")
+        code, _ = run("scripts/passk.py", str(tmp), "--gate", "R2:0:0.9")
+        check(code == 2, f"passk：k = 0 的门槛被拒绝（exit {code}）")
+        code, _ = run("scripts/passk.py", str(tmp), "--gate", "R2:1:1.5")
+        check(code == 2, f"passk：门槛大于 1 被拒绝（exit {code}）")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def main() -> int:
-    for t in (test_lint, test_passk, test_score, test_scan, test_scan_discovery):
+    for t in (test_lint, test_passk, test_passk_input, test_score, test_scan, test_scan_discovery, test_scan_redirects):
         print(f"\n== {t.__name__}")
         t()
     print(f"\n{'PASS' if not failures else 'FAIL'}（失败 {len(failures)} 项）")

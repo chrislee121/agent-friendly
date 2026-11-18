@@ -70,8 +70,10 @@ npx skills add chrislee121/agent-friendly
 脚本只用 Python 3.9+ 标准库：
 
 ```bash
-# 网站外部扫描（只发 GET；默认多一条 DNS-over-HTTPS，--no-dns 可关）
+# 网站外部扫描（只发 GET，跳转只跟同一主机；默认多一条 DNS-over-HTTPS，--no-dns 可关）
 python3 scripts/scan_site.py https://example.com
+# 国内网络连不上 Cloudflare DoH 时
+python3 scripts/scan_site.py https://example.com --doh https://dns.alidns.com/resolve
 
 # 工具契约检查：MCP tools/list 结果、工具数组或 OpenAPI 3.x，有 error 时 exit 1
 python3 scripts/lint_tools.py examples/tools.good.json

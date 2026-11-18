@@ -2,8 +2,10 @@
 """对网站做外部 agent 就绪度扫描。
 
 只发 GET 请求，只读首页和约定的发现路径，不爬站内其他页面，不跟随跨域链接。
+HTTP 跳转只跟同一主机（允许 http 升到 https）；首页例外，可以跳到规范主机，之后按新主机检查。
+不跟随跳到内网、回环、链路本地 IP 的地址。主机名解析到内网地址的情况不做检查。
 默认额外向 cloudflare-dns.com 发一条 DNS-over-HTTPS，查询 DNS-AID 的
-`_index._agents` SVCB 记录；`--no-dns` 可以关掉。这条查询会把域名告诉该解析器。
+`_index._agents` SVCB 记录；`--doh` 可换解析器，`--no-dns` 可以关掉。这条查询会把域名告诉该解析器。
 只覆盖评分卡里「可发现」「可理解」两个维度的一部分，以及授权元数据、内容偏好。
 能不能办成事要靠任务评测，扫描结果不能代替。
 """
@@ -11,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import queue
 import re
@@ -19,13 +22,34 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from typing import Callable
 from urllib.parse import urlencode, urljoin, urlparse
 
 UA = "agent-friendly-scan/1.0 (+https://github.com/chrislee121/agent-friendly)"
 MAX_BYTES = 1024 * 1024
 DEFAULT_DOH = "https://cloudflare-dns.com/dns-query"
+MAX_REDIRECTS = 5
+REDIRECT_CODES = (301, 302, 303, 307, 308)
+MCP_CARD_TYPE = "application/mcp-server-card+json"
+MCP_WELL_KNOWN = (
+    "/.well-known/mcp/server-card", "/.well-known/mcp/server-card.json", "/.well-known/mcp-server-card",
+    "/.well-known/mcp.json", "/.well-known/mcp/server.json",
+)
+CATALOG_PATHS = ("/.well-known/ai-catalog.json", "/.well-known/ard.json")
+PREFETCH = (
+    ("/robots.txt", "text/plain"), ("/sitemap.xml", "application/xml"), ("/llms.txt", "text/plain"),
+    ("/auth.md", "text/markdown"), ("/openapi.json", "application/json"),
+    ("/.well-known/http-message-signatures-directory", "application/http-message-signatures-directory+json"),
+    *((p, "application/json") for p in (
+        "/.well-known/api-catalog", *CATALOG_PATHS, *MCP_WELL_KNOWN, "/.well-known/agent-card.json",
+        "/.well-known/agent-skills/index.json", "/.well-known/skills/index.json",
+        "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration",
+        "/.well-known/oauth-protected-resource", "/.well-known/ucp", "/.well-known/acp.json",
+        "/.well-known/poppy.json", "/.well-known/x402",
+    )),
+)
 ARD_URN_RE = re.compile(r"^urn:air:[a-z0-9.-]+(?::[^\s:]+)+$", re.I)
 VERSION_RE = re.compile(r"^\d+\.\d+$")
 AMOUNT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
@@ -43,6 +67,7 @@ class Resp:
     headers: dict = field(default_factory=dict)
     body: str = ""
     error: str | None = None
+    url: str = ""
 
     @property
     def ctype(self) -> str:
@@ -66,6 +91,56 @@ def same_origin(origin: str, url: str) -> str | None:
     return None
 
 
+def _host_port(part) -> tuple[str, int]:
+    return (part.hostname or "").lower().rstrip("."), part.port or (443 if part.scheme == "https" else 80)
+
+
+def is_internal_ip(hostname: str | None) -> bool:
+    try:
+        ip = ipaddress.ip_address((hostname or "").strip("[]"))
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+
+
+def redirect_block(src: str, dst: str, any_host: bool) -> str | None:
+    """不允许这次跳转时返回原因。"""
+    a, b = urlparse(src), urlparse(dst)
+    if b.scheme not in ("http", "https"):
+        return f"目标协议 {b.scheme or '未知'}"
+    if is_internal_ip(b.hostname) and not is_internal_ip(a.hostname):
+        return f"目标是内网或保留地址 {b.hostname}"
+    if a.scheme == "https" and b.scheme == "http":
+        return "从 https 降到 http"
+    if any_host:
+        return None
+    (ha, pa), (hb, pb) = _host_port(a), _host_port(b)
+    upgrade = a.scheme == "http" and b.scheme == "https" and pa == 80 and pb == 443
+    if ha != hb or (pa != pb and not upgrade):
+        return f"跳到其他主机 {b.netloc}"
+    return None
+
+
+def html_link_targets(html: str, rel: str) -> list[str]:
+    targets = []
+    for match in re.finditer(r"<link\b[^>]*>", html or "", re.I):
+        tag = match.group(0)
+        if not re.search(rf"\brel=[\"']?[^\"'>]*\b{re.escape(rel)}\b", tag, re.I):
+            continue
+        href = re.search(r"\bhref=[\"']([^\"']+)", tag, re.I)
+        if href:
+            targets.append(href.group(1).strip())
+    return targets
+
+
+def is_ip(hostname: str | None) -> bool:
+    try:
+        ipaddress.ip_address((hostname or "").strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
 def host_in_domain(hostname: str | None, domain: str) -> bool:
     host = (hostname or "").lower().rstrip(".")
     base = domain.lower().rstrip(".")
@@ -82,38 +157,45 @@ def link_header_targets(header: str, rel: str) -> list[str]:
     return targets
 
 
-def ard_entry_errors(entry: object) -> list[str]:
+def catalog_entry_errors(entry: object) -> list[str]:
+    """AI Catalog 与 ARD 共同的硬性要求：identifier、媒体类型、url 与 data 二选一。"""
     if not isinstance(entry, dict):
         return ["条目不是对象"]
     errors = []
     identifier = entry.get("identifier")
-    if not isinstance(identifier, str) or not ARD_URN_RE.match(identifier):
-        errors.append("identifier 须为 urn:air:<域名>:<名称>")
-    if not isinstance(entry.get("displayName"), str) or not entry.get("displayName", "").strip():
-        errors.append("缺少 displayName")
+    if not isinstance(identifier, str) or not identifier.strip():
+        errors.append("缺少 identifier")
     kind = entry.get("type")
     if not isinstance(kind, str) or "/" not in kind:
         errors.append("type 须为媒体类型")
-    has_url = isinstance(entry.get("url"), str) and entry["url"].startswith("https://")
-    has_data = "data" in entry and entry.get("data") is not None
+    has_url = isinstance(entry.get("url"), str) and bool(entry["url"].strip())
+    has_data = entry.get("data") is not None
     if has_url == has_data:
-        errors.append("url 与 data 必须且只能有一个，url 须为 https")
+        errors.append("url 与 data 必须且只能有一个")
     return errors
 
 
-def ard_entries(data: object) -> tuple[list[dict], list[str]]:
+def catalog_entries(data: object) -> tuple[list[dict], list[str]]:
+    """返回（合法条目，提示）。ARD 额外要求的字段只作提示，不算不合法。"""
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         return [], ["缺少 entries 数组"]
     good, notes = [], []
     for i, entry in enumerate(data["entries"], 1):
-        errors = ard_entry_errors(entry)
+        errors = catalog_entry_errors(entry)
         if errors:
             notes.append(f"第 {i} 条：" + "；".join(errors))
-        else:
-            good.append(entry)
-            queries = entry.get("representativeQueries")
-            if not isinstance(queries, list) or not 2 <= len(queries) <= 5:
-                notes.append(f"第 {i} 条建议补 2～5 条 representativeQueries")
+            continue
+        good.append(entry)
+        hints = []
+        if not ARD_URN_RE.match(entry["identifier"]):
+            hints.append("开放发现建议用 urn:air:<域名>:<名称>")
+        if not isinstance(entry.get("displayName"), str) or not entry["displayName"].strip():
+            hints.append("ARD 要求 displayName")
+        queries = entry.get("representativeQueries")
+        if not isinstance(queries, list) or not 2 <= len(queries) <= 5:
+            hints.append("ARD 建议 2～5 条 representativeQueries")
+        if hints:
+            notes.append(f"第 {i} 条：" + "；".join(hints))
     return good, notes
 
 
@@ -139,11 +221,11 @@ def payment_info_ok(info: object) -> bool:
     return payment_offer_ok(info)
 
 
-def mpp_operation_count(doc: object) -> tuple[int, int]:
-    """返回（合法的付费操作数，带 x-payment-info 但格式不对的操作数）。"""
+def mpp_operation_count(doc: object) -> tuple[int, int, int]:
+    """返回（合法的付费操作数，x-payment-info 格式不对的数，格式对但没声明 402 响应的数）。"""
     if not isinstance(doc, dict) or not isinstance(doc.get("paths"), dict):
-        return 0, 0
-    ok = bad = 0
+        return 0, 0, 0
+    ok = bad = no402 = 0
     for item in doc["paths"].values():
         if not isinstance(item, dict):
             continue
@@ -152,11 +234,13 @@ def mpp_operation_count(doc: object) -> tuple[int, int]:
                 continue
             if not isinstance(op, dict) or "x-payment-info" not in op:
                 continue
-            if payment_info_ok(op["x-payment-info"]):
-                ok += 1
-            else:
+            if not payment_info_ok(op["x-payment-info"]):
                 bad += 1
-    return ok, bad
+            elif "402" not in {str(code) for code in (op.get("responses") or {})}:
+                no402 += 1
+            else:
+                ok += 1
+    return ok, bad, no402
 
 
 def svcb_answers(data: dict) -> tuple[list[str], list[str], bool]:
@@ -218,10 +302,19 @@ def happy_eyeballs_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, sour
     raise last_err or OSError(f"无法连接 {host}:{port}")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def http_fetch(url: str, headers: dict, timeout: float = 10.0) -> Resp:
+    """不自动跟随跳转：3xx 原样返回，由 Scanner 决定跟不跟。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA, **headers})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             hdrs = {}
             for k in set(r.headers.keys()):
                 hdrs[k.lower()] = ", ".join(r.headers.get_all(k) or [])
@@ -244,32 +337,76 @@ class Check:
 
 
 class Scanner:
-    def __init__(self, base: str, fetch: Fetcher, doh: str | None = DEFAULT_DOH):
-        p = urlparse(base if "://" in base else f"https://{base}")
-        self.origin = f"{p.scheme}://{p.netloc}"
-        self.home = base if "://" in base else f"https://{base}"
-        self.host = (p.hostname or "").lower()
+    def __init__(self, base: str, fetch: Fetcher, doh: str | None = DEFAULT_DOH, workers: int = 8):
         self.fetch = fetch
         self.doh = doh
+        self.workers = workers
         self.cache: dict[tuple, Resp] = {}
         self.checks: list[Check] = []
+        self.catalog: list[dict] = []
+        self.rebase(base if "://" in base else f"https://{base}")
+        self.dns_host = self.host
+
+    def rebase(self, url: str):
+        p = urlparse(url)
+        self.origin = f"{p.scheme}://{p.netloc}"
+        self.home = url
+        self.host = (p.hostname or "").lower()
+
+    def resolve(self, url: str, accept: str, any_host: bool = False) -> Resp:
+        for _ in range(MAX_REDIRECTS + 1):
+            resp = self.fetch(url, {"Accept": accept})
+            location = resp.headers.get("location", "").strip()
+            if resp.status not in REDIRECT_CODES or not location:
+                return replace(resp, url=url)
+            target = urljoin(url, location)
+            why = redirect_block(url, target, any_host)
+            if why:
+                return Resp(resp.status, resp.headers, "", f"未跟随跳转：{why}", url)
+            url = target
+        return Resp(0, {}, "", f"跳转超过 {MAX_REDIRECTS} 次", url)
 
     def get(self, path: str, accept: str = "*/*") -> Resp:
         url = path if "://" in path else urljoin(self.origin, path)
         key = (url, accept)
         if key not in self.cache:
-            self.cache[key] = self.fetch(url, {"Accept": accept})
+            self.cache[key] = self.resolve(url, accept)
         return self.cache[key]
+
+    def prefetch(self, items):
+        keys = []
+        for path, accept in items:
+            key = (path if "://" in path else urljoin(self.origin, path), accept)
+            if key not in self.cache and key not in keys:
+                keys.append(key)
+        if not keys:
+            return
+        with ThreadPoolExecutor(max_workers=max(1, self.workers)) as pool:
+            results = list(pool.map(lambda k: self.resolve(*k), keys))
+        for key, resp in zip(keys, results):
+            self.cache[key] = resp
 
     def add(self, *args, **kwargs):
         self.checks.append(Check(*args, **kwargs))
 
     def run(self) -> list[Check]:
-        home = self.get(self.home, "text/html")
+        start = self.home
+        home = self.resolve(start, "text/html", any_host=True)
         if home.status == 0:
             self.add("home", "D1", "首页可访问", "fail", f"无法访问首页：{home.error}", "检查网址、证书和防火墙规则")
             return self.checks
-        self.add("home", "D1", "首页可访问", "pass" if 200 <= home.status < 400 else "fail", f"HTTP {home.status}")
+        moved = ""
+        if home.url and home.url != start:
+            self.rebase(home.url)
+            moved = f"；从 {start} 跳转到 {home.url}，后续按 {self.origin} 检查"
+        self.cache[(self.home, "text/html")] = home
+        ok = 200 <= home.status < 300
+        self.add("home", "D1", "首页可访问", "pass" if ok else "fail",
+                 f"HTTP {home.status}{moved}" + (f"（{home.error}）" if home.error else ""))
+        extra = [(self.home, "text/markdown")]
+        if self.doh and self.dns_host and not is_ip(self.dns_host):
+            extra.append((self.doh_url(f"_index._agents.{self.dns_host}"), "application/dns-json"))
+        self.prefetch(list(PREFETCH) + extra)
         self.robots()
         self.sitemap()
         self.link_headers(home)
@@ -277,9 +414,10 @@ class Scanner:
         self.llms_txt()
         self.html_semantics(home)
         self.well_known()
+        self.catalog_check(home)
+        self.mcp_card()
         self.dns_aid()
         self.auth_md()
-        self.ard(home)
         self.poppy()
         self.x402()
         self.mpp()
@@ -395,16 +533,6 @@ class Scanner:
         self.add("api_catalog", "D1", "API Catalog（RFC 9727）", "pass" if p else "info",
                  f"{p}" if p else "未发布", "有公开 API 时发布 /.well-known/api-catalog（application/linkset+json）")
 
-        p = found(["/.well-known/ai-catalog.json"], lambda d: isinstance(d, dict) and isinstance(d.get("entries"), list))
-        self.add("ai_catalog", "D1", "AI Catalog（草案）", "pass" if p else "info",
-                 f"{p}" if p else "未发布", "一个域名下有多个 MCP / agent 服务时，用 /.well-known/ai-catalog.json 汇总")
-
-        p = found(["/.well-known/mcp/server-card.json", "/.well-known/mcp.json", "/.well-known/mcp/server.json"],
-                  lambda d: isinstance(d, dict) and bool(d.get("name") or (d.get("serverInfo") or {}).get("name")))
-        self.add("mcp_card", "D1", "MCP 服务发现", "pass" if p else "info",
-                 f"{p}" if p else "未发现 MCP Server Card 或 server.json",
-                 "提供远程 MCP 时：在端点下发布 /server-card，并在 MCP Registry 登记 server.json")
-
         p = found(["/.well-known/agent-card.json"],
                   lambda d: isinstance(d, dict) and d.get("name") and (d.get("supportedInterfaces") or d.get("url")))
         self.add("a2a_card", "D1", "A2A Agent Card", "pass" if p else "info",
@@ -438,18 +566,18 @@ class Scanner:
 
     def dns_aid(self):
         title = "DNS-AID（草案）"
-        if not self.host:
+        if not self.dns_host or is_ip(self.dns_host):
             self.add("dns_aid", "D1", title, "skip", "网址没有域名，跳过")
             return
         if not self.doh:
             self.add("dns_aid", "D1", title, "skip", "已用 --no-dns 跳过。需要时发布 _index._agents 的 ServiceMode SVCB")
             return
-        name = f"_index._agents.{self.host}"
+        name = f"_index._agents.{self.dns_host}"
         data, error = self.doh_query(name)
         if error:
             self.add("dns_aid", "D1", title, "skip",
                      f"DNS-over-HTTPS 查询失败（{error}）。这不表示站点没有记录",
-                     "解析器可用后再查；记录本身是 _index._agents 上 priority≥1 的 SVCB")
+                     "换一个能访问的解析器重查，例如 --doh https://dns.alidns.com/resolve")
             return
         service, aliases, ad = svcb_answers(data)
         if not service and aliases:
@@ -468,13 +596,16 @@ class Scanner:
             self.add("dns_aid", "D1", title, "pass", f"ServiceMode SVCB → {where}，本次响应带 AD")
         else:
             self.add("dns_aid", "D1", title, "warn",
-                     f"有 ServiceMode SVCB → {where}，但本次 DoH 响应没有 AD，不能当作已通过 DNSSEC 验证",
-                     "给发现记录所在区做 DNSSEC 签名，并用会验证 DNSSEC 的解析器复查")
+                     f"有 ServiceMode SVCB → {where}，但本次解析器没有返回 AD，不能当作已通过 DNSSEC 验证。"
+                     "有的解析器（如 AliDNS）不做验证，AD 永远为 false",
+                     "确认发现记录所在区已做 DNSSEC 签名，再用会验证 DNSSEC 的解析器复查")
+
+    def doh_url(self, name: str) -> str:
+        sep = "&" if "?" in (self.doh or "") else "?"
+        return f"{self.doh}{sep}{urlencode({'name': name, 'type': 'SVCB'})}"
 
     def doh_query(self, name: str) -> tuple[dict | None, str | None]:
-        sep = "&" if "?" in (self.doh or "") else "?"
-        url = f"{self.doh}{sep}{urlencode({'name': name, 'type': 'SVCB'})}"
-        resp = self.get(url, "application/dns-json")
+        resp = self.get(self.doh_url(name), "application/dns-json")
         if resp.status != 200:
             return None, resp.error or f"HTTP {resp.status}"
         data = resp.json()
@@ -512,62 +643,71 @@ class Scanner:
             return
         self.add("auth_md", "D4", title, "pass", "本域已有 /auth.md、受保护资源元数据和 agent_auth")
 
-    def ard(self, home: Resp):
-        title = "ARD 清单（草案）"
-        primary = self.get("/.well-known/ard.json", "application/json")
-        primary_data = primary.json() if primary.status == 200 else None
-        good, notes = ard_entries(primary_data) if isinstance(primary_data, dict) else ([], [])
-        source = "/.well-known/ard.json" if good else ""
-        if not good:
-            for raw in link_header_targets(home.headers.get("link", ""), "ard"):
+    def catalog_check(self, home: Resp):
+        title = "AI Catalog / ARD（草案）"
+        candidates = [urljoin(self.origin, p) for p in CATALOG_PATHS]
+        offsite = []
+        for rel in ("ai-catalog", "ard"):
+            for raw in link_header_targets(home.headers.get("link", ""), rel) + html_link_targets(home.body, rel):
                 target = same_origin(self.origin, raw)
-                found = self.ard_at(target) if target else None
-                if found:
-                    good, notes, source = found
-                    break
-            if not good:
-                for match in re.finditer(r"<link\b[^>]*>", home.body or "", re.I):
-                    tag = match.group(0)
-                    if not re.search(r"\brel=[\"'][^\"']*\bard\b", tag, re.I):
-                        continue
-                    href = re.search(r"\bhref=[\"']([^\"']+)", tag, re.I)
-                    target = same_origin(self.origin, href.group(1)) if href else None
-                    found = self.ard_at(target) if target else None
-                    if found:
-                        good, notes, source = found
-                        break
-        legacy = None
-        if not good:
-            legacy_resp = self.get("/.well-known/ai-catalog.json", "application/json")
-            legacy = legacy_resp.json() if legacy_resp.status == 200 else None
-            if isinstance(legacy, dict):
-                good, notes = ard_entries(legacy)
-            if good:
-                self.add("ard", "D1", title, "warn",
-                         f"只在前代路径 /.well-known/ai-catalog.json 发现 {len(good)} 条合法条目",
-                         "改到 /.well-known/ard.json，并加 Link: </.well-known/ard.json>; rel=\"ard\"。前代路径消费者可以不看")
-                return
-        if good:
-            hint = f"；{'；'.join(notes[:2])}" if notes else ""
-            self.add("ard", "D1", title, "pass", f"{source} 有 {len(good)} 条合法条目{hint}")
+                if not target:
+                    offsite.append(raw)
+                elif target not in candidates:
+                    candidates.append(target)
+        found, broken = [], []
+        for url in candidates:
+            resp = self.get(url, "application/json")
+            data = resp.json() if resp.status == 200 else None
+            if not isinstance(data, dict) or "entries" not in data:
+                continue
+            good, notes = catalog_entries(data)
+            label = url[len(self.origin):] if url.startswith(self.origin) else url
+            (found if good else broken).append((label, good, notes))
+            self.catalog.extend(good)
+        skipped = f"；未跟随外域链接 {len(offsite)} 个" if offsite else ""
+        if found:
+            parts = "、".join(f"{label} {len(good)} 条" for label, good, _ in found)
+            notes = [n for _, _, ns in found for n in ns][:2]
+            hint = f"。{'；'.join(notes)}" if notes else ""
+            self.add("ai_catalog", "D1", title, "pass", f"{parts}{hint}{skipped}")
             return
-        if primary.status == 200 or (isinstance(legacy, dict) and legacy.get("entries")):
-            detail = "；".join(notes[:3]) or "条目缺少 identifier、displayName、type，或 url/data 不互斥"
-            self.add("ard", "D1", title, "warn", f"发现清单，但没有合法条目。{detail}",
-                     "每条要有 urn:air: 标识、displayName、媒体类型，且 url 与 data 二选一")
+        if broken:
+            detail = "；".join(n for _, _, ns in broken for n in ns[:2])
+            self.add("ai_catalog", "D1", title, "warn", f"发现目录，但没有合法条目。{detail}{skipped}",
+                     "每条要有 identifier、媒体类型 type，且 url 与 data 二选一")
             return
-        self.add("ard", "D1", title, "info", "未发布 /.well-known/ard.json",
-                 "一个域名下有多个 agent 资源时发布，条目带 2～5 条 representativeQueries")
+        self.add("ai_catalog", "D1", title, "info", f"未发布 /.well-known/ai-catalog.json 或 /.well-known/ard.json{skipped}",
+                 "有多个 MCP / agent 资源时发布。MCP Server Card 扩展读 ai-catalog.json，ARD 读 ard.json，两个可以同时放")
 
-    def ard_at(self, url: str) -> tuple[list[dict], list[str], str] | None:
-        linked = self.get(url, "application/json")
-        data = linked.json() if linked.status == 200 else None
-        if not isinstance(data, dict):
-            return None
-        good, notes = ard_entries(data)
-        if not good:
-            return None
-        return good, notes, url
+    def mcp_card(self):
+        title = "MCP Server Card"
+
+        def valid(data) -> bool:
+            return isinstance(data, dict) and bool(data.get("name") or (data.get("serverInfo") or {}).get("name"))
+
+        offsite = 0
+        for entry in self.catalog:
+            if entry.get("type") != MCP_CARD_TYPE:
+                continue
+            if valid(entry.get("data")):
+                self.add("mcp_card", "D1", title, "pass", f"目录内嵌：{entry['identifier']}")
+                return
+            target = same_origin(self.origin, entry["url"]) if isinstance(entry.get("url"), str) else None
+            if not target:
+                offsite += 1
+                continue
+            if valid(self.get(target, MCP_CARD_TYPE).json()):
+                self.add("mcp_card", "D1", title, "pass", f"经目录找到：{target[len(self.origin):]}")
+                return
+        for path in MCP_WELL_KNOWN:
+            resp = self.get(path, "application/json")
+            if resp.status == 200 and valid(resp.json()):
+                self.add("mcp_card", "D1", title, "pass",
+                         f"{path}（旧式固定位置，客户端未必会查；建议同时在 AI Catalog 里登记）")
+                return
+        msg = f"目录里有 {offsite} 张外域 card，未跟随" if offsite else "未发现"
+        self.add("mcp_card", "D1", title, "info", msg,
+                 "提供远程 MCP 时：card 放在端点 URL 后加 /server-card，在 /.well-known/ai-catalog.json 里登记，并在 MCP Registry 登记 server.json")
 
     def poppy(self):
         title = "Personal Agent Protocol"
@@ -692,10 +832,16 @@ class Scanner:
             self.add("mpp", "D3", title, "info", "未发布 /openapi.json。没有按次付费就不需要",
                      "有 MPP 时在付费操作上加 x-payment-info，intent 用 charge 或 session")
             return
-        ok, bad = mpp_operation_count(data)
-        if bad:
-            self.add("mpp", "D3", title, "warn", f"{bad} 个操作的 x-payment-info 格式不对，{ok} 个合法",
-                     "新文档用 offers 数组；每项 intent 为 charge 或 session，method 非空，amount 为整数字符串或 null")
+        ok, bad, no402 = mpp_operation_count(data)
+        if bad or no402:
+            problems = []
+            if bad:
+                problems.append(f"{bad} 个操作的 x-payment-info 格式不对")
+            if no402:
+                problems.append(f"{no402} 个付费操作没有声明 402 响应")
+            self.add("mpp", "D3", title, "warn", "，".join(problems) + f"；{ok} 个合法",
+                     "新文档用 offers 数组；每项 intent 为 charge 或 session，method 非空，amount 为整数字符串或 null；"
+                     "付费操作的 responses 里要有 402")
             return
         if ok:
             self.add("mpp", "D3", title, "pass", f"/openapi.json 有 {ok} 个带合法 x-payment-info 的操作。运行时仍以 402 质询为准")
@@ -725,10 +871,14 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--timeout", type=float, default=10.0, help="单个请求超时秒数")
     ap.add_argument("--no-dns", action="store_true", help="不向公共解析器查询 DNS-AID")
+    ap.add_argument("--doh", default=DEFAULT_DOH,
+                    help="DNS-over-HTTPS JSON 接口，默认 Cloudflare；国内可用 https://dns.alidns.com/resolve")
+    ap.add_argument("--workers", type=int, default=8, help="并发请求数，默认 8")
     args = ap.parse_args()
 
     socket.create_connection = happy_eyeballs_connect
-    scanner = Scanner(args.url, lambda u, h: http_fetch(u, h, args.timeout), doh=None if args.no_dns else DEFAULT_DOH)
+    scanner = Scanner(args.url, lambda u, h: http_fetch(u, h, args.timeout),
+                      doh=None if args.no_dns else args.doh, workers=args.workers)
     checks = scanner.run()
     summary = summarize(checks)
 
@@ -748,7 +898,8 @@ def main() -> int:
         s = summary[d]
         print(f"  {d}: 通过 {s['pass']}，警告 {s['warn']}，失败 {s['fail']}，未发布 {s['info']}，跳过 {s['skip']}")
     print("\n说明：「未发布」不等于有问题，按 references/surfaces.md 判断你是否需要该项。")
-    print("DNS-AID 默认问 cloudflare-dns.com，域名会发给该解析器；不需要时加 --no-dns。")
+    if scanner.doh:
+        print(f"DNS-AID 查询发给了 {urlparse(scanner.doh).netloc}，域名会被该解析器看到；不需要时加 --no-dns。")
     return 0
 
 
