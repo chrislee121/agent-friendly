@@ -1,0 +1,81 @@
+{
+  "tools": [
+    {
+      "name": "dine_slots_search",
+      "title": "查询可订座位",
+      "description": "按门店、日期、人数查询可订座位，返回最多 limit 个时段。用于用户想订座、问有没有位子时。查已有预订请用 dine_bookings_list，不要用本工具。只能查未来 30 天，不含包间。无副作用。",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "store_id": {"type": "string", "description": "门店 ID，形如 sh-xujiahui。不知道时先用 dine_stores_search 查"},
+          "date": {"type": "string", "format": "date", "description": "门店当地日期 YYYY-MM-DD，今天到 30 天内"},
+          "party_size": {"type": "integer", "minimum": 1, "maximum": 20, "description": "用餐人数"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10, "description": "最多返回几个时段"},
+          "cursor": {"type": "string", "description": "上一页返回的 next_cursor"}
+        },
+        "required": ["store_id", "date", "party_size"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "slots": {"type": "array", "items": {"type": "object", "properties": {"slot_id": {"type": "string"}, "start_time": {"type": "string"}}}},
+          "next_cursor": {"type": ["string", "null"]}
+        },
+        "required": ["slots"]
+      },
+      "annotations": {"readOnlyHint": true, "openWorldHint": false}
+    },
+    {
+      "name": "dine_booking_preview",
+      "title": "预览预订",
+      "description": "为指定时段生成预订预览，返回门店、时间、人数、定金和取消规则，以及 preview_id。用于用户选定时段后、正式预订前。本工具不会锁座也不会扣款，正式预订请用 dine_booking_commit。",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "slot_id": {"type": "string", "description": "dine_slots_search 返回的 slot_id"},
+          "party_size": {"type": "integer", "minimum": 1, "maximum": 20, "description": "用餐人数"},
+          "note": {"type": "string", "maxLength": 200, "description": "给门店的备注，如儿童座椅"}
+        },
+        "required": ["slot_id", "party_size"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {"preview_id": {"type": "string"}, "deposit_cny": {"type": "number"}, "cancel_policy": {"type": "string"}},
+        "required": ["preview_id"]
+      },
+      "annotations": {"readOnlyHint": true, "openWorldHint": false}
+    },
+    {
+      "name": "dine_booking_commit",
+      "title": "确认预订",
+      "description": "提交 dine_booking_preview 生成的预订。有定金时，服务端会向用户发起支付确认，用户在 App 内确认后才会扣款，所以返回状态可能是 awaiting_user_confirmation。不要在用户还没看过预览时调用。可在开餐前 2 小时内通过 dine_booking_cancel 免费取消。",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "preview_id": {"type": "string", "description": "dine_booking_preview 返回的 preview_id，15 分钟内有效"},
+          "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 64, "description": "客户端生成的唯一键，重试时保持不变"}
+        },
+        "required": ["preview_id", "idempotency_key"]
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "dine_booking_cancel",
+      "title": "取消预订",
+      "description": "取消一笔预订并按规则退还定金。用于用户明确要取消时；只改时间请用 dine_booking_preview 重新预订。开餐前 2 小时内取消会扣定金，服务端会要求用户在 App 内确认。",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {"type": "string", "description": "预订号，形如 BK-20261120-0042"},
+          "reason": {"type": "string", "enum": ["schedule_change", "party_change", "other"], "description": "取消原因"}
+        },
+        "required": ["booking_id"]
+      },
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
+    }
+  ]
+}
