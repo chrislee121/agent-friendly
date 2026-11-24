@@ -158,9 +158,12 @@ python3 $SKILL_ROOT/scripts/passk.py agent-friendly/eval-results.jsonl \
 
 ```bash
 python3 $SKILL_ROOT/scripts/score.py agent-friendly/scorecard.json --gate L3
+python3 $SKILL_ROOT/scripts/report.py --scorecard agent-friendly/scorecard.json --out agent-friendly
 ```
 
-等级是逐级门槛制，平均分高不能抵消短板。任一红线不过，等级最多只能到 L2，验收不通过。
+等级是逐级门槛制，平均分高不能抵消短板。任一红线不过，等级最多只能到 L2，验收不通过。报告写到 `agent-friendly/report.html` 和 `agent-friendly/report.md`。有扫描、工具定义或评测结果时，再加上 `--scan`、`--tools`、`--evals`，缺的那一节不会出现。只有扫描时，页头是 0–100 的扫描分：通过记 1，警告记 0.5，失败记 0，未发布和跳过不扣分。它不进入 L0–L5，两边都有时等级仍只看评分卡。
+
+报告语言跟当前对话。生成时加上 `--lang`，代码是 `zh` `en` `hi` `es` `fr` `ar` `bn` `pt` `ru` `ur`。繁体中文用 `zh`。用户没说明语言时，按他正在使用的语言选。不传 `--lang` 时，脚本读 `LC_ALL`、`LC_MESSAGES`、`LANG`，读不到或是 `C`/`POSIX` 就用中文。评分卡里的证据原文不翻译。
 
 ## P9 审核评估
 
@@ -202,4 +205,5 @@ python3 $SKILL_ROOT/scripts/score.py agent-friendly/scorecard.json --gate L3
 | [scripts/lint_tools.py](scripts/lint_tools.py) | 工具契约检查：MCP `tools/list` 或 OpenAPI 3.x，失败 exit 1 |
 | [scripts/passk.py](scripts/passk.py) | 评测结果计算 pass^k、pass@k、不安全动作率，可设门槛 |
 | [scripts/score.py](scripts/score.py) | 评分卡计算等级、红线、加权分，可设门槛 |
+| [scripts/report.py](scripts/report.py) | 把已有的扫描、评分、契约、评测收成 report.html 和 report.md。`--lang` 选 zh en hi es fr ar bn pt ru ur，省略时按系统语言，识别不了用中文 |
 | [scripts/selftest.py](scripts/selftest.py) | 冒烟测试 |

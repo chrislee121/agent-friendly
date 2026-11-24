@@ -80,7 +80,7 @@ The phase checklist is in [SKILL.md](SKILL.md). Scoring rules are in [references
 | [SKILL.md](SKILL.md) | Instructions the agent follows, phase by phase |
 | [references/](references/) | Standards, surfaces, security, compliance, testing, scorecard, industries, runtimes |
 | [templates/](templates/) | Deliverable templates for P0–P9 |
-| [scripts/](scripts/) | Site scan, tool lint, pass^k, scorecard, offline self-test |
+| [scripts/](scripts/) | Site scan, tool lint, pass^k, scorecard, HTML/Markdown report, offline self-test |
 | [examples/](examples/) | Sample tool definitions, eval results, scorecard, and a booking walkthrough |
 
 ## Scripts
@@ -102,6 +102,12 @@ python3 scripts/passk.py examples/eval-results.sample.jsonl --gate R2:4:0.8 --ma
 
 # Level, red lines, and industry-weighted score from a scorecard
 python3 scripts/score.py examples/scorecard.sample.json --profile commerce --gate L3
+
+# One HTML report plus one Markdown file. --lang: zh en hi es fr ar bn pt ru ur
+# Omit --lang and the script reads LC_ALL, LC_MESSAGES, LANG, then Chinese
+python3 scripts/report.py --scorecard examples/scorecard.sample.json \
+  --tools examples/tools.good.json --evals examples/eval-results.sample.jsonl \
+  --lang en --out agent-friendly-report
 ```
 
 ## Self-test
@@ -208,7 +214,7 @@ P9 审核评估 ← P8 验收 ← P7 测试评测 ← P6 分批实施 ← P5 安
 | [SKILL.md](SKILL.md) | Agent 按阶段执行的说明 |
 | [references/](references/) | 标准、接入面、安全、合规、测试、评分卡、行业、runtime |
 | [templates/](templates/) | P0～P9 的交付物模板 |
-| [scripts/](scripts/) | 站点扫描、工具检查、pass^k、评分、离线自检 |
+| [scripts/](scripts/) | 站点扫描、工具检查、pass^k、评分、HTML / Markdown 报告、离线自检 |
 | [examples/](examples/) | 工具样例、评测结果、评分卡，以及订座闭环示例 |
 
 ## 脚本
@@ -229,6 +235,12 @@ python3 scripts/passk.py examples/eval-results.sample.jsonl --gate R2:4:0.8 --ma
 
 # 评分卡算等级、红线和行业加权分
 python3 scripts/score.py examples/scorecard.sample.json --profile commerce --gate L3
+
+# 有哪份结果就收进同一份 HTML 和 Markdown。--lang：zh en hi es fr ar bn pt ru ur
+# 不传 --lang 时读 LC_ALL、LC_MESSAGES、LANG，识别不了用中文
+python3 scripts/report.py --scorecard examples/scorecard.sample.json \
+  --tools examples/tools.good.json --evals examples/eval-results.sample.jsonl \
+  --lang zh --out agent-friendly-report
 ```
 
 ## 最小自检

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""冒烟测试：不联网，用 examples/ 和内置假站点验证四个脚本。"""
+"""冒烟测试：不联网，用 examples/ 和内置假站点验证五个脚本。"""
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +26,8 @@ def check(cond: bool, label: str) -> None:
         failures.append(label)
 
 
-def run(*args: str) -> tuple[int, str]:
-    p = subprocess.run([sys.executable, *args], capture_output=True, text=True, cwd=ROOT)
+def run(*args, env=None):
+    p = subprocess.run([sys.executable, *args], capture_output=True, text=True, cwd=ROOT, env=env)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -338,8 +339,107 @@ def test_passk_input() -> None:
         tmp.unlink(missing_ok=True)
 
 
+def test_report() -> None:
+    import shutil
+    out = ROOT / "examples" / ".tmp-report"
+    scan = ROOT / "examples" / ".tmp-report-scan.json"
+    try:
+        code, _ = run(
+            "scripts/report.py",
+            "--scorecard", "examples/scorecard.sample.json",
+            "--tools", "examples/tools.good.json",
+            "--evals", "examples/eval-results.sample.jsonl",
+            "--lang", "zh",
+            "--out", str(out),
+        )
+        html = (out / "report.html").read_text(encoding="utf-8")
+        md = (out / "report.md").read_text(encoding="utf-8")
+        check(code == 0 and "L2" in html and "可查询" in html and "H6" in html, "report：HTML 写出等级和未过红线")
+        check("70.2" in md and "H6" in md and "pass^1" in md, "report：Markdown 写出同一结论")
+        check('lang="zh-CN"' in html, "report：--lang zh 写入 html lang")
+
+        code, _ = run(
+            "scripts/report.py",
+            "--scorecard", "examples/scorecard.sample.json",
+            "--lang", "en",
+            "--out", str(out),
+        )
+        html = (out / "report.html").read_text(encoding="utf-8")
+        md = (out / "report.md").read_text(encoding="utf-8")
+        check(code == 0 and "Queryable" in html and "Fix first" in html, "report：英文报告")
+        check("Queryable" in md and "Visibility and AI identity" in md, "report：英文 Markdown")
+
+        scan.write_text(json.dumps({
+            "url": "https://example.com",
+            "checks": [
+                {
+                    "id": "markdown_negotiation",
+                    "dimension": "D2",
+                    "title": "Markdown 内容协商",
+                    "status": "warn",
+                    "message": "返回 text/html",
+                    "fix": "请求头为 Accept: text/markdown 时返回 Markdown 版本，浏览器仍返回 HTML",
+                },
+                {
+                    "id": "api_catalog",
+                    "dimension": "D1",
+                    "title": "API Catalog（RFC 9727）",
+                    "status": "info",
+                    "message": "未发布",
+                    "fix": "",
+                },
+            ],
+        }), encoding="utf-8")
+        code, _ = run("scripts/report.py", "--scan", str(scan), "--lang", "en", "--out", str(out))
+        html = (out / "report.html").read_text(encoding="utf-8")
+        md = (out / "report.md").read_text(encoding="utf-8")
+        check(code == 0 and "Returned text/html" in html and "Markdown negotiation" in html, "report：扫描说明译成英文")
+        check("50" in html and "Gaps" in html and "does not enter the level" in html, "report：扫描分不计未发布")
+        check("Scan score **50 Gaps**" in md, "report：Markdown 写出扫描分")
+        code, _ = run(
+            "scripts/report.py",
+            "--scorecard", "examples/scorecard.sample.json",
+            "--scan", str(scan),
+            "--lang", "zh",
+            "--out", str(out),
+        )
+        html = (out / "report.html").read_text(encoding="utf-8")
+        check(code == 0 and "可查询" in html and "扫描分" in html and "不进入等级" in html, "report：扫描分不取代等级")
+
+        code, err = run("scripts/report.py", "--scorecard", "examples/scorecard.sample.json", "--lang", "de", "--out", str(out))
+        check(code == 2 and "不认识的语言" in err, f"report：未知语言 exit 2（实际 {code}）")
+
+        env = os.environ.copy()
+        env["LC_ALL"] = "en_US.UTF-8"
+        code, _ = run(
+            "scripts/report.py",
+            "--scorecard", "examples/scorecard.sample.json",
+            "--out", str(out),
+            env=env,
+        )
+        html = (out / "report.html").read_text(encoding="utf-8")
+        check(code == 0 and "Queryable" in html, "report：LC_ALL=en_US 出英文")
+
+        env["LC_ALL"] = "C"
+        env["LANG"] = "en_US.UTF-8"
+        code, _ = run(
+            "scripts/report.py",
+            "--scorecard", "examples/scorecard.sample.json",
+            "--out", str(out),
+            env=env,
+        )
+        html = (out / "report.html").read_text(encoding="utf-8")
+        check(code == 0 and "可查询" in html, "report：LC_ALL=C 仍用中文")
+
+        code, _ = run("scripts/report.py", "--out", str(out))
+        check(code == 2, f"report：没有输入 exit 2（实际 {code}）")
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+        scan.unlink(missing_ok=True)
+
+
 def main() -> int:
-    for t in (test_lint, test_passk, test_passk_input, test_score, test_scan, test_scan_discovery, test_scan_redirects):
+    for t in (test_lint, test_passk, test_passk_input, test_score, test_report, test_scan, test_scan_discovery, test_scan_redirects):
         print(f"\n== {t.__name__}")
         t()
     print(f"\n{'PASS' if not failures else 'FAIL'}（失败 {len(failures)} 项）")

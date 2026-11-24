@@ -100,6 +100,12 @@ python3 scripts/passk.py examples/eval-results.sample.jsonl --gate R2:4:0.8 --ma
 
 # Level, red lines, and industry-weighted score from a scorecard
 python3 scripts/score.py examples/scorecard.sample.json --profile commerce --gate L3
+
+# One HTML report plus one Markdown file. --lang: zh en hi es fr ar bn pt ru ur
+# Omit --lang and the script reads LC_ALL, LC_MESSAGES, LANG, then Chinese
+python3 scripts/report.py --scorecard examples/scorecard.sample.json \
+  --tools examples/tools.good.json --evals examples/eval-results.sample.jsonl \
+  --lang en --out agent-friendly-report
 ```
 
 ## Self-test
